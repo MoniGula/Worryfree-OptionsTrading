@@ -34,11 +34,11 @@ flowchart LR
 
 4. **Act — `execute()` → `alpaca_client.py`.** The agent builds and submits a real multi-leg (MLeg) order — a true single-ticket credit spread or iron butterfly, not four separate naked legs — against Alpaca's Trading API. In our own test runs this week, the agent autonomously scanned all 7 symbols, decided 7 tradeable setups, snapped every one of them onto real contracts, and got all 7 accepted by Alpaca's paper-trading engine end to end with no human touching an order ticket.
 
-5. **Validate — before the agent is ever trusted to decide.** `src/validation/` is a standing quality gate on the agent's own inputs: `leak_scanner.py` catches the three most common look-ahead leaks (full-sample normalization, centered/forward rolling windows, future-timestamp joins) in any feature before the decision engine is allowed to see it; `walk_forward.py` enforces strictly chronological, non-overlapping train/validation splits so any backtest claim is honest; `feature_diagnostics.py` and `report.py` turn that into a reviewable Markdown report. This is what separates an agent we'd actually let touch an account from a backtest that quietly cheated.
+5. **Validate — the gate a feature has to clear before it's trusted with real orders.** `src/validation/` is a standalone auditing toolkit, run by us as developers (and reproducible by anyone, see the demo below) against every feature before it's wired into `decide()`: `leak_scanner.py` catches the three most common look-ahead leaks (full-sample normalization, centered/forward rolling windows, future-timestamp joins); `walk_forward.py` enforces strictly chronological, non-overlapping train/validation splits so any backtest claim is honest; `feature_diagnostics.py` and `report.py` turn that into a reviewable Markdown report. To be precise: this is a pre-deployment audit gate, not a per-run runtime check inside `main.py` — every feature actually used by `decide()` has been run through it during development, but the agent doesn't re-invoke the scanner on live data every morning. It's what separates an agent we'd actually let touch an account from a backtest that quietly cheated, and it's why we could confidently trust the regime-classification thresholds in step 2 instead of guessing at them.
 
 ## Where the "AI" is, honestly
 
-We want to be direct about this rather than oversell it: the decision logic is a transparent, rule-based regime classifier (ADX + IV Rank + VRP thresholds), not an LLM prompted to "decide what to trade." We made that choice deliberately for a hackathon judged on *trading agents* handling real (paper) capital — a rules-based agent is auditable, replayable, and its failure modes are debuggable line by line, which matters enormously when the "action" is an irreversible order submission. What makes it an *agent* rather than a script is the autonomy and closed-loop structure: it independently senses fresh market state every run, forms a judgment per symbol from that state (not a fixed calendar), grounds that judgment against live, changing exchange data before acting, executes without human sign-off, and its inputs are continuously self-audited for the exact kind of silent errors (look-ahead leakage) that make so many "trading bots" fake. The architecture is intentionally built so an LLM-driven policy layer could be dropped in on top of `decide()` later without touching the sensing, grounding, execution, or validation layers at all — those are already the hard, unglamorous parts that make any policy on top of them trustworthy.
+We want to be direct about this rather than oversell it: the decision logic is a transparent, rule-based regime classifier (ADX + IV Rank + VRP thresholds), not an LLM prompted to "decide what to trade." We made that choice deliberately for a hackathon judged on *trading agents* handling real (paper) capital — a rules-based agent is auditable, replayable, and its failure modes are debuggable line by line, which matters enormously when the "action" is an irreversible order submission. What makes it an *agent* rather than a script is the autonomy and closed-loop structure: it independently senses fresh market state every run, forms a judgment per symbol from that state (not a fixed calendar), grounds that judgment against live, changing exchange data before acting, executes without human sign-off, and every feature behind that judgment has been put through a standalone audit gate for the exact kind of silent errors (look-ahead leakage) that make so many "trading bots" fake. The architecture is intentionally built so an LLM-driven policy layer could be dropped in on top of `decide()` later without touching the sensing, grounding, execution, or validation layers at all — those are already the hard, unglamorous parts that make any policy on top of them trustworthy.
 
 ## Risk posture
 
@@ -50,6 +50,48 @@ We want to be direct about this rather than oversell it: the decision logic is a
 ## Tech stack
 
 Python · `alpaca-py` (Alpaca Trading API, multi-leg options orders) · `yfinance` (price history) · `pandas` / `numpy` / `scipy` (feature engineering) · `pytest` (65 unit tests covering every module, including negative-control tests against the exact bugs found during development) · GitHub for source control.
+
+## Demo walk-through for judges
+
+Three commands, roughly five minutes, no Alpaca account required for the first two:
+
+1. **Run the test suite** (proves the logic, including the exact bugs found and fixed during development, via negative-control tests):
+
+   ```bash
+   pip install -r requirements.txt
+   python -m pytest -v
+   ```
+
+   Expect `65 passed` — including tests that assert a NaN underlying price or an infinite IV Rank is *rejected* rather than crashing the decision engine (a real bug we hit and fixed on live weekend data), and tests that assert a centered/leaky rolling window is *caught* by the validation module rather than silently accepted.
+
+2. **Run the validation demo against real, live market data** (no API keys needed — this only reads public price history):
+
+   ```bash
+   python demo_validation.py
+   ```
+
+   This pulls real SPY closes via `yfinance`, builds a legitimate trailing-window feature and a deliberately leaky centered-window twin of the same computation, and runs both through `src/validation/leak_scanner.py` live. It then runs a real (small-sample, honestly-scored) walk-forward evaluation via `src/validation/walk_forward.py` and writes a `VALIDATION_REPORT.md` you can open directly. A real run against live data produced:
+
+   ```
+   Leak audit — causal 20d mean(|return|): PASSED
+   Leak audit — centered-window mean(|return|) (control): FAILED
+     - Rolling feature (window=20) matches a centered window more closely
+       than a trailing one — this includes future bars and is a
+       look-ahead leak.
+
+   Walk-forward validation — 20d realized vol vs next-day |return|
+   Folds run: 6, Mean score: -0.5053 (over the 2 non-degenerate folds)
+   ```
+
+   The negative correlation itself isn't the point (6 months of one ticker's data is a small, noisy sample) — the point is that the scanner correctly separates the honest feature from its leaky twin, and the walk-forward result is reported as-is, degenerate folds and all, rather than cherry-picked.
+
+3. **Run the live agent** (requires a free Alpaca paper-trading key from [alpaca.markets](https://alpaca.markets), see [README setup](README.md#setup)):
+
+   ```bash
+   python -m src.main
+   ```
+
+   This is the real sense → think → ground → act loop described above, against Alpaca's live-listed option chain. A run during market hours will scan the watchlist, log each symbol's regime classification and routing decision, and submit any resulting multi-leg orders — our own such run got all 7 watchlist symbols to `OrderStatus.ACCEPTED`.
 
 ## What's next
 

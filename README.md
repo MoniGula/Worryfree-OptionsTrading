@@ -25,6 +25,8 @@ Before any feature is trusted by the decision engine, `src/validation/` provides
 - `feature_diagnostics.py` — distributional summaries, a diagnostic-only forward-return correlation check, and rolling stability checks to catch feature bugs before they reach the strategy.
 - `report.py` — renders leak-audit and walk-forward results as Markdown, suitable for pasting into the hackathon write-up's results section.
 
+To see this run live against real market data (no Alpaca account needed), run `python demo_validation.py` — it fetches real SPY price history, audits a legitimate feature alongside a deliberately leaky twin, runs a real walk-forward evaluation, and writes the results to `VALIDATION_REPORT.md`. See [SUBMISSION.md's demo walk-through](SUBMISSION.md#demo-walk-through-for-judges) for expected output.
+
 ## Project layout
 
 ```
