@@ -3,6 +3,7 @@
 WorryFree Options Trading is an autonomous options-selling agent built for the [Alpaca AI Trading Agents Hackathon](https://lablab.ai/ai-hackathons/alpaca-ai-trading-agents-hackathon) on lablab.ai. Every trading day, without a human touching an order ticket, it checks whether options are priced too high relative to a forecast of realized volatility, decides which defined-risk structure to sell (**credit spread** or **iron butterfly**) based on the current trend/volatility regime, grounds that decision against Alpaca's real, live-listed option chain, and submits the order — all backed by leak-audited, walk-forward-validated features and hard risk gates, instead of a naive backtest or emotion-driven manual trading.
 
 **→ For the full pitch — the problem, the agent's sense/think/act/verify loop, and exactly where its autonomy and judgment live — see [SUBMISSION.md](SUBMISSION.md).**
+**→ For judges: a narrated [demo video walkthrough](demo/DEMO_VIDEO.mp4) and a [concise presentation script](PRESENTATION_SCRIPT.md) are also in this repo.**
 
 ## How it works
 
@@ -25,7 +26,51 @@ Before any feature is trusted by the decision engine, `src/validation/` provides
 - `feature_diagnostics.py` — distributional summaries, a diagnostic-only forward-return correlation check, and rolling stability checks to catch feature bugs before they reach the strategy.
 - `report.py` — renders leak-audit and walk-forward results as Markdown, suitable for pasting into the hackathon write-up's results section.
 
-To see this run live against real market data (no Alpaca account needed), run `python demo_validation.py` — it fetches real SPY price history, audits a legitimate feature alongside a deliberately leaky twin, runs a real walk-forward evaluation, and writes the results to `VALIDATION_REPORT.md`. See [SUBMISSION.md's demo walk-through](SUBMISSION.md#demo-walk-through-for-judges) for expected output.
+To see this run live against real market data (no Alpaca account needed), run `python demo_validation.py` — it fetches real SPY price history, audits a legitimate feature alongside a deliberately leaky twin, runs a real walk-forward evaluation, and writes the results to `VALIDATION_REPORT.md`. See [SUBMISSION.md's demo walk-through](SUBMISSION.md#demo-walk-through-for-judges) for a step-by-step guide.
+
+### Latest demo output
+
+Output from an actual run of `python demo_validation.py` against live SPY price data (regenerate anytime — it will differ slightly day to day since it always pulls the latest real prices):
+
+```
+Pulling real SPY price history (yfinance, 6mo)...
+Running leak-audit on a causal (trailing-window) feature...
+Running leak-audit on a deliberately leaky (centered-window) feature...
+Running walk-forward validation over the causal feature...
+
+# WorryFree — Live Validation Report
+
+Generated from 125 real trading-day closes for SPY (most recent: 2026-08-27).
+
+### Leak audit — causal 20d mean(|return|): PASSED
+No issues detected.
+
+### Leak audit — centered-window mean(|return|) (control): FAILED
+**Errors:**
+- Rolling feature (window=20) matches a centered window more closely than a trailing one — this includes future bars and is a look-ahead leak.
+
+### Feature diagnostics — causal 20d realized vol
+- mean: 0.1406
+- std: 0.0317
+- min / max: 0.0890 / 0.2039
+- pct missing: 0.0000
+
+### Walk-forward validation — 20d realized vol vs next-day |return|
+Folds run: 6
+Mean score: -0.5053
+Score std: 0.0094
+
+| Fold | Train range | Validation range | Score   | Error |
+|------|-------------|-------------------|---------|-------|
+| 0    | (0, 40)     | (40, 50)          | -       | -     |
+| 1    | (0, 50)     | (50, 60)          | -       | -     |
+| 2    | (0, 60)     | (60, 70)          | -       | -     |
+| 3    | (0, 70)     | (70, 80)          | -       | -     |
+| 4    | (0, 80)     | (80, 90)          | -0.4959 | -     |
+| 5    | (0, 90)     | (90, 100)         | -0.5147 | -     |
+```
+
+The leak scanner correctly separates the honest feature from its leaky twin. Folds marked `-` are degenerate (every validation day landed on the same side of the training threshold) and are reported as-is rather than dropped or cherry-picked — 6 months of one ticker is a small, noisy sample, and the point of this demo is that the validation gate reports honestly, not that the score is impressive.
 
 ## Project layout
 
