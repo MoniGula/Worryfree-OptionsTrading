@@ -2,17 +2,26 @@
 WorryFree Options Trading Agent — daily entry point.
 
 Orchestrates the scan -> decide -> execute loop once per trading day.
-Run this module directly (``python -m src.main``) or invoke ``main()``
+Run this module directly (python -m src.main) or invoke main()
 from a scheduler or cloud function.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from config import settings
 from src.execution.alpaca_client import AlpacaClient
+from src.execution.chain_utils import (
+    available_strikes,
+    expiration_window,
+    nearest_expiration,
+    nearest_strike,
+    snap_strikes,
+    strike_above,
+    strike_below,
+)
 from src.execution.order_builder import (
     attach_limit_price,
     build_credit_spread_order,
@@ -37,13 +46,13 @@ def scan(symbols: list[str]) -> list[dict]:
     Parameters
     ----------
     symbols:
-        List of ticker symbols to evaluate (e.g. ``["SPY", "QQQ"]``).
+        List of ticker symbols to evaluate (e.g. ["SPY", "QQQ"]).
 
     Returns
     -------
     list[dict]
         One feature record per symbol, keyed by the feature names produced
-        by ``src.features.volatility`` and ``src.features.regime``.
+        by src.features.volatility and src.features.regime.
     """
     import pandas as pd
     import yfinance as yf
@@ -100,14 +109,14 @@ def decide(feature_records: list[dict]) -> list[dict]:
     """
     Run the decision engine on each feature record and return trade specs.
 
-    Calls ``src.strategy.decision_engine.classify_regime`` and
-    ``src.strategy.decision_engine.route_strategy`` for every symbol, then
-    filters out ``None`` results (no-trade signals).
+    Calls src.strategy.decision_engine.classify_regime and
+    src.strategy.decision_engine.route_strategy for every symbol, then
+    filters out None results (no-trade signals).
 
     Parameters
     ----------
     feature_records:
-        Output of ``scan``.
+        Output of scan.
 
     Returns
     -------
@@ -116,7 +125,7 @@ def decide(feature_records: list[dict]) -> list[dict]:
     """
     params = settings.get_strategy_parameters()
     expiry_dte = params["max_days_to_expiry"]
-    expiry_date = (datetime.utcnow() + timedelta(days=expiry_dte)).strftime("%Y-%m-%d")
+    expiry_date = (datetime.now(UTC) + timedelta(days=expiry_dte)).strftime("%Y-%m-%d")
 
     trade_specs: list[dict] = []
     for record in feature_records:
@@ -152,17 +161,147 @@ def decide(feature_records: list[dict]) -> list[dict]:
     return trade_specs
 
 
+def _align_spec_to_real_chain(client: AlpacaClient, spec: dict) -> dict:
+    """
+    Snap a model-derived trade specification onto real, listed Alpaca
+    option contracts.
+
+    credit_spread.select_strikes and iron_butterfly.select_strikes
+    compute strikes and a target expiry purely from a delta/volatility
+    model, with no knowledge of what strikes and expirations are actually
+    listed for the underlying. Submitting an OCC symbol built from a
+    purely theoretical strike/expiry combination fails with
+    asset ... not found unless it happens to coincide with a real
+    contract. This aligns the spec to the nearest real expiration and
+    strikes before order construction.
+
+    Parameters
+    ----------
+    client:
+        Connected AlpacaClient used to query the live option chain.
+    spec:
+        Trade specification produced by decide.
+
+    Returns
+    -------
+    dict
+        A copy of spec with expiry_date and strikes snapped to
+        real listed contracts.
+
+    Raises
+    ------
+    ValueError
+        If the underlying has no listed options within the search window.
+    """
+    symbol = spec["symbol"]
+    target_expiry = spec["expiry_date"]
+
+    chain = client.get_option_chain(symbol, target_expiry)
+    resolved_expiry = target_expiry
+
+    if not chain:
+        gte, lte = expiration_window(target_expiry, window_days=14)
+        expirations = client.list_expirations(symbol, gte, lte)
+        if not expirations:
+            raise ValueError(
+                f"no listed option expirations for {symbol} within "
+                f"14 days of {target_expiry}"
+            )
+        resolved_expiry = nearest_expiration(expirations, target_expiry)
+        chain = client.get_option_chain(symbol, resolved_expiry)
+        if not chain:
+            raise ValueError(
+                f"expiration {resolved_expiry} for {symbol} returned no contracts"
+            )
+
+    aligned = dict(spec)
+    aligned["expiry_date"] = resolved_expiry
+
+    if spec["strategy"] == "credit_spread":
+        put_keys = ["short_strike", "long_strike"] if spec["direction"] == "put" else []
+        call_keys = ["short_strike", "long_strike"] if spec["direction"] == "call" else []
+        leg_strikes = available_strikes(
+            chain, "put" if spec["direction"] == "put" else "call"
+        )
+        snapped = snap_strikes(chain, spec["strikes"], put_keys, call_keys)
+
+        # A sparse strike grid can snap both legs to the same real strike,
+        # collapsing the spread to zero width and zero defined risk. If
+        # that happens, push the long strike out to the next real strike
+        # further from the short strike so the spread stays a spread.
+        if snapped["short_strike"] == snapped["long_strike"]:
+            short = snapped["short_strike"]
+            original_long = spec["strikes"]["long_strike"]
+            if original_long < spec["strikes"]["short_strike"]:
+                widened = strike_below(leg_strikes, short)
+            else:
+                widened = strike_above(leg_strikes, short)
+            if widened is None:
+                raise ValueError(
+                    f"only one real strike available for {symbol} at "
+                    f"{resolved_expiry}, cannot form a defined-risk spread"
+                )
+            snapped["long_strike"] = widened
+
+        aligned["strikes"] = snapped
+    elif spec["strategy"] == "iron_butterfly":
+        # The short put and short call MUST share the same strike for this
+        # to remain a butterfly (not just two independently-snapped legs
+        # that happen to diverge), so snap the body to a strike that is
+        # actually listed for both option types before snapping the wings.
+        puts = available_strikes(chain, "put")
+        calls = available_strikes(chain, "call")
+        common_body_strikes = sorted(set(puts) & set(calls))
+        if not common_body_strikes:
+            raise ValueError(
+                f"no strike listed as both put and call for {symbol} at "
+                f"{resolved_expiry}"
+            )
+        original = spec["strikes"]
+        body = nearest_strike(common_body_strikes, original["short_put"])
+
+        # Wings must sit strictly outside the body on their respective
+        # side, or the position stops being a defined-risk butterfly.
+        long_put = strike_below(puts, body)
+        long_call = strike_above(calls, body)
+        if long_put is None or long_call is None:
+            raise ValueError(
+                f"no real strikes available outside the body ({body}) for "
+                f"{symbol} at {resolved_expiry}, cannot form defined-risk wings"
+            )
+        aligned["strikes"] = {
+            **original,
+            "short_put": body,
+            "short_call": body,
+            "long_put": long_put,
+            "long_call": long_call,
+            "body_strike": body,
+        }
+    else:
+        aligned["strikes"] = spec["strikes"]
+
+    if resolved_expiry != target_expiry:
+        logger.info(
+            "%s: target expiry %s not listed, using nearest real expiry %s.",
+            symbol,
+            target_expiry,
+            resolved_expiry,
+        )
+
+    return aligned
+
+
 def execute(trade_specs: list[dict]) -> list[dict]:
     """
     Construct and submit orders for each approved trade specification.
 
-    Uses ``src.execution.order_builder`` to build order dicts and
-    ``src.execution.alpaca_client.AlpacaClient`` to submit them.
+    Uses src.execution.order_builder to build order dicts and
+    src.execution.alpaca_client.AlpacaClient to submit them.
 
     Parameters
     ----------
     trade_specs:
-        Output of ``decide``.
+        Output of decide.
 
     Returns
     -------
@@ -177,6 +316,16 @@ def execute(trade_specs: list[dict]) -> list[dict]:
 
     confirmations: list[dict] = []
     for spec in trade_specs:
+        try:
+            spec = _align_spec_to_real_chain(client, spec)
+        except ValueError as exc:
+            logger.error(
+                "%s: no listed options found near target expiry, skipping. (%s)",
+                spec["symbol"],
+                exc,
+            )
+            continue
+
         strikes = spec["strikes"]
 
         if spec["strategy"] == "credit_spread":
@@ -227,8 +376,8 @@ def main() -> None:
     """
     Run the full daily scan-decide-execute loop.
 
-    Loads configuration via ``config.settings``, runs ``scan`` ->
-    ``decide`` -> ``execute``, and logs a summary of orders submitted.
+    Loads configuration via config.settings, runs scan ->
+    decide -> execute, and logs a summary of orders submitted.
     """
     params = settings.get_strategy_parameters()
     symbols = params["underlying_symbols"]

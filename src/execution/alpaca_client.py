@@ -64,9 +64,9 @@ class AlpacaClient:
         Parameters
         ----------
         symbol:
-            Underlying ticker symbol (e.g. ``"SPY"``).
+            Underlying ticker symbol (e.g. "SPY").
         expiry_date:
-            Expiration date string in ``YYYY-MM-DD`` format.
+            Expiration date string in YYYY-MM-DD format.
 
         Returns
         -------
@@ -83,6 +83,45 @@ class AlpacaClient:
         contracts = getattr(response, "option_contracts", response)
         return [dict(contract) for contract in contracts]
 
+    def list_expirations(
+        self, symbol: str, expiration_date_gte: str, expiration_date_lte: str
+    ) -> list[str]:
+        """
+        List the distinct real expiration dates available for symbol
+        within an inclusive date range.
+
+        Used to find the nearest tradable expiration when a model-derived
+        target expiry date has no listed contracts (e.g. it falls on a
+        weekend or a date the exchange doesn't list for that underlying).
+
+        Parameters
+        ----------
+        symbol:
+            Underlying ticker symbol (e.g. "AAPL").
+        expiration_date_gte, expiration_date_lte:
+            Inclusive date range bounds, YYYY-MM-DD strings.
+
+        Returns
+        -------
+        list[str]
+            Sorted list of distinct expiration date strings found in the
+            range. Empty if the underlying has no listed options at all.
+        """
+        from alpaca.trading.requests import GetOptionContractsRequest
+
+        request = GetOptionContractsRequest(
+            underlying_symbols=[symbol.upper()],
+            expiration_date_gte=expiration_date_gte,
+            expiration_date_lte=expiration_date_lte,
+        )
+        response = self._client().get_option_contracts(request)
+        contracts = getattr(response, "option_contracts", response)
+        dates = {
+            str(dict(contract).get("expiration_date")) for contract in contracts
+        }
+        dates.discard("None")
+        return sorted(dates)
+
     def submit_order(self, order: dict) -> dict:
         """
         Submit a multi-leg options order to the Alpaca broker.
@@ -90,7 +129,7 @@ class AlpacaClient:
         Parameters
         ----------
         order:
-            Order specification as constructed by ``order_builder``.
+            Order specification as constructed by order_builder.
 
         Returns
         -------
