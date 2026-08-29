@@ -73,15 +73,25 @@ class AlpacaClient:
         list[dict]
             List of option contract records with strike, bid, ask, delta, etc.
         """
+        from alpaca.trading.enums import AssetStatus
         from alpaca.trading.requests import GetOptionContractsRequest
 
-        request = GetOptionContractsRequest(
-            underlying_symbols=[symbol.upper()],
-            expiration_date=expiry_date,
-        )
-        response = self._client().get_option_contracts(request)
-        contracts = getattr(response, "option_contracts", response)
-        return [dict(contract) for contract in contracts]
+        contracts: list[dict] = []
+        page_token: str | None = None
+        while True:
+            request = GetOptionContractsRequest(
+                underlying_symbols=[symbol.upper()],
+                expiration_date=expiry_date,
+                status=AssetStatus.ACTIVE,
+                page_token=page_token,
+            )
+            response = self._client().get_option_contracts(request)
+            page = getattr(response, "option_contracts", response) or []
+            contracts.extend(dict(contract) for contract in page)
+            page_token = getattr(response, "next_page_token", None)
+            if not page_token:
+                break
+        return contracts
 
     def list_expirations(
         self, symbol: str, expiration_date_gte: str, expiration_date_lte: str
@@ -107,18 +117,27 @@ class AlpacaClient:
             Sorted list of distinct expiration date strings found in the
             range. Empty if the underlying has no listed options at all.
         """
+        from alpaca.trading.enums import AssetStatus
         from alpaca.trading.requests import GetOptionContractsRequest
 
-        request = GetOptionContractsRequest(
-            underlying_symbols=[symbol.upper()],
-            expiration_date_gte=expiration_date_gte,
-            expiration_date_lte=expiration_date_lte,
-        )
-        response = self._client().get_option_contracts(request)
-        contracts = getattr(response, "option_contracts", response)
-        dates = {
-            str(dict(contract).get("expiration_date")) for contract in contracts
-        }
+        dates: set[str] = set()
+        page_token: str | None = None
+        while True:
+            request = GetOptionContractsRequest(
+                underlying_symbols=[symbol.upper()],
+                expiration_date_gte=expiration_date_gte,
+                expiration_date_lte=expiration_date_lte,
+                status=AssetStatus.ACTIVE,
+                page_token=page_token,
+            )
+            response = self._client().get_option_contracts(request)
+            page = getattr(response, "option_contracts", response) or []
+            dates.update(
+                str(dict(contract).get("expiration_date")) for contract in page
+            )
+            page_token = getattr(response, "next_page_token", None)
+            if not page_token:
+                break
         dates.discard("None")
         return sorted(dates)
 

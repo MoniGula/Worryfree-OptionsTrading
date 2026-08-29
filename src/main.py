@@ -195,16 +195,21 @@ def _align_spec_to_real_chain(client: AlpacaClient, spec: dict) -> dict:
     """
     symbol = spec["symbol"]
     target_expiry = spec["expiry_date"]
+    today = datetime.now(UTC).date().isoformat()
 
     chain = client.get_option_chain(symbol, target_expiry)
     resolved_expiry = target_expiry
 
     if not chain:
         gte, lte = expiration_window(target_expiry, window_days=14)
-        expirations = client.list_expirations(symbol, gte, lte)
+        # Never fall back to a date that has already closed for trading —
+        # an expiration dated today or earlier may already be expired by
+        # the time this runs, which Alpaca will reject outright.
+        gte = max(gte, today)
+        expirations = [d for d in client.list_expirations(symbol, gte, lte) if d > today]
         if not expirations:
             raise ValueError(
-                f"no listed option expirations for {symbol} within "
+                f"no listed future option expirations for {symbol} within "
                 f"14 days of {target_expiry}"
             )
         resolved_expiry = nearest_expiration(expirations, target_expiry)

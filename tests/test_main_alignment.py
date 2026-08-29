@@ -120,6 +120,39 @@ def test_falls_back_to_nearest_real_expiration_when_target_not_listed():
     assert aligned["expiry_date"] == "2026-09-06"
 
 
+def test_falls_back_only_to_a_future_expiration_never_an_already_closed_one():
+    # 2026-08-28 is in the list but is today/in the past relative to the
+    # frozen "now" below, so it must never be selected even though it is
+    # numerically closer to the (also past) target than the future date.
+    client = FakeAlpacaClient(
+        chains_by_expiry={"2026-09-04": SPARSE_CHAIN},
+        expirations=["2026-08-21", "2026-08-28", "2026-09-04", "2026-09-11"],
+    )
+    spec = {
+        "strategy": "credit_spread",
+        "direction": "put",
+        "symbol": "TEST",
+        "expiry_date": "2026-08-29",  # closest listed date is 2026-08-28, but that's already past
+        "strikes": {"short_strike": 308.0, "long_strike": 297.0, "max_profit": 1.5},
+    }
+
+    import src.main as main_module
+
+    class FrozenDatetime(main_module.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return main_module.datetime(2026, 8, 29, 3, 59, tzinfo=tz)
+
+    original_datetime = main_module.datetime
+    main_module.datetime = FrozenDatetime
+    try:
+        aligned = _align_spec_to_real_chain(client, spec)
+    finally:
+        main_module.datetime = original_datetime
+
+    assert aligned["expiry_date"] == "2026-09-04"
+
+
 def test_raises_when_no_expirations_available_at_all():
     client = FakeAlpacaClient(chains_by_expiry={}, expirations=[])
     spec = {
