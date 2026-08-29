@@ -7,12 +7,18 @@ strategy decision engine.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
+
+TRADING_DAYS_PER_YEAR = 252
 
 
 def realized_volatility(prices: pd.Series, window: int = 20) -> float:
     """
     Estimate annualised realised volatility from a price series.
+
+    Uses close-to-close log returns over the trailing ``window`` days.
+    Only past and current bars are used — no centering, no look-ahead.
 
     Parameters
     ----------
@@ -26,7 +32,19 @@ def realized_volatility(prices: pd.Series, window: int = 20) -> float:
     float
         Annualised realised volatility as a decimal (e.g. 0.18 for 18 %).
     """
-    pass
+    prices = pd.Series(prices).dropna()
+    if len(prices) < window + 1:
+        raise ValueError(
+            f"Need at least {window + 1} price observations, got {len(prices)}."
+        )
+
+    # Trailing window only: the last `window + 1` prices produce `window`
+    # log returns, all strictly using data up to "today" — no future bars.
+    trailing = prices.iloc[-(window + 1):]
+    log_returns = np.log(trailing / trailing.shift(1)).dropna()
+
+    daily_std = log_returns.std(ddof=1)
+    return float(daily_std * np.sqrt(TRADING_DAYS_PER_YEAR))
 
 
 def iv_rank(current_iv: float, iv_high: float, iv_low: float) -> float:
@@ -49,7 +67,11 @@ def iv_rank(current_iv: float, iv_high: float, iv_low: float) -> float:
     float
         IV Rank in the range [0.0, 1.0].
     """
-    pass
+    if iv_high <= iv_low:
+        raise ValueError("iv_high must be strictly greater than iv_low.")
+
+    rank = (current_iv - iv_low) / (iv_high - iv_low)
+    return float(min(max(rank, 0.0), 1.0))
 
 
 def vol_risk_premium(implied_vol: float, realised_vol: float) -> float:
@@ -74,4 +96,4 @@ def vol_risk_premium(implied_vol: float, realised_vol: float) -> float:
     float
         Volatility risk premium as a decimal.
     """
-    pass
+    return float(implied_vol - realised_vol)

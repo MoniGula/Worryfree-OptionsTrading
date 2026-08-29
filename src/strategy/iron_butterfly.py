@@ -7,6 +7,10 @@ underlying is expected to pin near the current price at expiration.
 
 from __future__ import annotations
 
+from math import sqrt
+
+from src.strategy.credit_spread import _delta_to_strike_distance, _round_to_strike_increment
+
 
 def select_strikes(
     underlying_price: float,
@@ -38,7 +42,38 @@ def select_strikes(
         Keys: ``short_put``, ``short_call``, ``long_put``, ``long_call``,
         ``body_strike``, ``wing_width``.
     """
-    pass
+    if underlying_price <= 0 or implied_vol <= 0 or expiry_dte <= 0:
+        raise ValueError("underlying_price, implied_vol, and expiry_dte must be positive.")
+
+    increment = 1.0 if underlying_price < 200 else 5.0
+    body_strike = _round_to_strike_increment(underlying_price, increment)
+
+    put_wing_distance = _delta_to_strike_distance(
+        underlying_price, wing_delta, implied_vol, expiry_dte, "put"
+    )
+    call_wing_distance = _delta_to_strike_distance(
+        underlying_price, wing_delta, implied_vol, expiry_dte, "call"
+    )
+
+    long_put = _round_to_strike_increment(body_strike - put_wing_distance, increment)
+    long_call = _round_to_strike_increment(body_strike + call_wing_distance, increment)
+
+    # Symmetric wing width: use the wider of the two sides so both wings
+    # have equal, defined risk (a standard/"iron" butterfly convention).
+    wing_width = max(body_strike - long_put, long_call - body_strike)
+    wing_width = max(wing_width, increment)
+
+    long_put = body_strike - wing_width
+    long_call = body_strike + wing_width
+
+    return {
+        "short_put": float(body_strike),
+        "short_call": float(body_strike),
+        "long_put": float(long_put),
+        "long_call": float(long_call),
+        "body_strike": float(body_strike),
+        "wing_width": float(wing_width),
+    }
 
 
 def select_wing_width(
@@ -67,4 +102,28 @@ def select_wing_width(
     float
         Recommended wing width in strike-price points.
     """
-    pass
+    if underlying_price <= 0 or implied_vol <= 0 or expiry_dte <= 0:
+        raise ValueError("underlying_price, implied_vol, and expiry_dte must be positive.")
+    if not (0 < target_credit_ratio < 1):
+        raise ValueError("target_credit_ratio must be between 0 and 1.")
+
+    # Expected 1-sigma move over the expiry window sets a baseline for how
+    # much premium the ATM straddle is likely worth; wider wings are needed
+    # to hit a given credit ratio when IV (and therefore straddle value) is
+    # higher relative to price.
+    t = expiry_dte / 365.0
+    expected_move = underlying_price * implied_vol * sqrt(t)
+
+    # A body (ATM short straddle) is roughly worth ~0.8x the expected move
+    # for near-dated, near-ATM options (a standard rule-of-thumb approx).
+    approx_straddle_value = 0.8 * expected_move
+
+    # width * target_credit_ratio ~= straddle credit collected -> solve width.
+    width = approx_straddle_value / target_credit_ratio
+
+    increment = 1.0 if underlying_price < 200 else 5.0
+    width = _round_to_strike_increment(width, increment)
+
+    lower_bound = increment
+    upper_bound = max(underlying_price * 0.15, increment)
+    return float(min(max(width, lower_bound), upper_bound))

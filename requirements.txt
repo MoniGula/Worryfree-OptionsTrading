@@ -1,5 +1,7 @@
 pandas
 numpy
+scipy
 alpaca-py
 python-dotenv
+yfinance
 pytest

@@ -26,7 +26,24 @@ class AlpacaClient:
         base_url:
             Alpaca base URL (paper or live endpoint).
         """
-        pass
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.base_url = base_url
+        self._trading_client: Optional[Any] = None
+
+    def _client(self) -> Any:
+        """Lazily construct the underlying alpaca-py TradingClient."""
+        if self._trading_client is None:
+            from alpaca.trading.client import TradingClient
+
+            paper = "paper" in self.base_url
+            self._trading_client = TradingClient(
+                api_key=self.api_key,
+                secret_key=self.api_secret,
+                paper=paper,
+                url_override=self.base_url,
+            )
+        return self._trading_client
 
     def get_account(self) -> dict:
         """
@@ -37,7 +54,8 @@ class AlpacaClient:
         dict
             Account information as returned by the Alpaca API.
         """
-        pass
+        account = self._client().get_account()
+        return dict(account)
 
     def get_option_chain(self, symbol: str, expiry_date: str) -> list[dict]:
         """
@@ -55,7 +73,15 @@ class AlpacaClient:
         list[dict]
             List of option contract records with strike, bid, ask, delta, etc.
         """
-        pass
+        from alpaca.trading.requests import GetOptionContractsRequest
+
+        request = GetOptionContractsRequest(
+            underlying_symbols=[symbol.upper()],
+            expiration_date=expiry_date,
+        )
+        response = self._client().get_option_contracts(request)
+        contracts = getattr(response, "option_contracts", response)
+        return [dict(contract) for contract in contracts]
 
     def submit_order(self, order: dict) -> dict:
         """
@@ -71,7 +97,31 @@ class AlpacaClient:
         dict
             Order confirmation including order ID and status.
         """
-        pass
+        from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
+        from alpaca.trading.requests import (
+            OptionLegRequest,
+            LimitOrderRequest,
+        )
+
+        legs = [
+            OptionLegRequest(
+                symbol=leg["symbol"],
+                side=OrderSide.BUY if leg["side"] == "buy" else OrderSide.SELL,
+                ratio_qty=leg.get("ratio_qty", 1),
+            )
+            for leg in order["legs"]
+        ]
+
+        request = LimitOrderRequest(
+            qty=order["qty"],
+            order_class=OrderClass.MLEG,
+            time_in_force=TimeInForce.DAY,
+            limit_price=order.get("limit_price"),
+            legs=legs,
+        )
+
+        submitted = self._client().submit_order(request)
+        return dict(submitted)
 
     def get_positions(self) -> list[dict]:
         """
@@ -82,7 +132,8 @@ class AlpacaClient:
         list[dict]
             List of open position records.
         """
-        pass
+        positions = self._client().get_all_positions()
+        return [dict(position) for position in positions]
 
     def cancel_order(self, order_id: str) -> None:
         """
@@ -93,4 +144,4 @@ class AlpacaClient:
         order_id:
             Unique identifier of the order to cancel.
         """
-        pass
+        self._client().cancel_order_by_id(order_id)
