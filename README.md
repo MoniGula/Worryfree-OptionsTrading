@@ -1,6 +1,8 @@
 # WorryFree Options Trading
 
-WorryFree Options Trading is an Options Alpha agent built for the [Alpaca AI Trading Agents Hackathon](https://lablab.ai/ai-hackathons/alpaca-ai-trading-agents-hackathon) on lablab.ai. It checks whether options are priced too high relative to a forecast of realized volatility, then trades that gap using defined-risk **credit spreads** and **iron butterflies** — with leak-audited, walk-forward-validated features and built-in risk gates, instead of a naive backtest or emotion-driven manual trading.
+WorryFree Options Trading is an autonomous options-selling agent built for the [Alpaca AI Trading Agents Hackathon](https://lablab.ai/ai-hackathons/alpaca-ai-trading-agents-hackathon) on lablab.ai. Every trading day, without a human touching an order ticket, it checks whether options are priced too high relative to a forecast of realized volatility, decides which defined-risk structure to sell (**credit spread** or **iron butterfly**) based on the current trend/volatility regime, grounds that decision against Alpaca's real, live-listed option chain, and submits the order — all backed by leak-audited, walk-forward-validated features and hard risk gates, instead of a naive backtest or emotion-driven manual trading.
+
+**→ For the full pitch — the problem, the agent's sense/think/act/verify loop, and exactly where its autonomy and judgment live — see [SUBMISSION.md](SUBMISSION.md).**
 
 ## How it works
 
