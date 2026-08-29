@@ -1,5 +1,7 @@
 """Unit tests for src.strategy.credit_spread, iron_butterfly, and decision_engine."""
 
+import math
+
 import pytest
 
 from src.strategy import credit_spread, iron_butterfly
@@ -118,3 +120,51 @@ def test_route_strategy_iron_butterfly_for_ranging():
     )
     assert spec["strategy"] == "iron_butterfly"
     assert "body_strike" in spec["strikes"]
+
+
+def test_route_strategy_rejects_nan_underlying_price():
+    with pytest.raises(ValueError, match="non-finite"):
+        route_strategy(
+            regime="trending",
+            iv_rank=0.5,
+            underlying_price=math.nan,
+            expiry_dte=3,
+            implied_vol=0.2,
+        )
+
+
+def test_route_strategy_rejects_nan_implied_vol():
+    with pytest.raises(ValueError, match="non-finite"):
+        route_strategy(
+            regime="ranging",
+            iv_rank=0.5,
+            underlying_price=450.0,
+            expiry_dte=3,
+            implied_vol=math.nan,
+        )
+
+
+def test_route_strategy_rejects_infinite_iv_rank():
+    with pytest.raises(ValueError, match="non-finite"):
+        route_strategy(
+            regime="trending",
+            iv_rank=math.inf,
+            underlying_price=450.0,
+            expiry_dte=3,
+            implied_vol=0.2,
+        )
+
+
+def test_route_strategy_undefined_regime_short_circuits_before_nan_check():
+    # "undefined" should still return None even with a NaN price, since
+    # no strike math ever runs for that regime.
+    assert (
+        route_strategy(
+            regime="undefined",
+            iv_rank=0.5,
+            underlying_price=math.nan,
+            expiry_dte=3,
+            implied_vol=0.2,
+        )
+        is None
+    )

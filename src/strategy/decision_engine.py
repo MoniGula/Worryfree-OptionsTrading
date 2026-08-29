@@ -8,6 +8,7 @@ given underlying on a given trading day.
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from src.strategy import credit_spread, iron_butterfly
@@ -32,17 +33,17 @@ def classify_regime(
     Parameters
     ----------
     trend_strength:
-        ADX-style trend-strength score from ``src.features.regime``.
+        ADX-style trend-strength score from src.features.regime.
     iv_rank:
-        Current IV Rank in [0, 1] from ``src.features.volatility``.
+        Current IV Rank in [0, 1] from src.features.volatility.
     vol_risk_premium:
         Volatility risk premium (IV minus realised vol) from
-        ``src.features.volatility``.
+        src.features.volatility.
 
     Returns
     -------
     str
-        One of ``"trending"``, ``"ranging"``, or ``"undefined"``.
+        One of "trending", "ranging", or "undefined".
     """
     # Risk gate: never trade a name whose options aren't rich enough to
     # justify premium-selling risk, regardless of trend/range shape.
@@ -69,8 +70,8 @@ def route_strategy(
     Parameters
     ----------
     regime:
-        Output of ``classify_regime`` — ``"trending"``, ``"ranging"``, or
-        ``"undefined"``.
+        Output of classify_regime — "trending", "ranging", or
+        "undefined".
     iv_rank:
         Current IV Rank for the underlying.
     underlying_price:
@@ -84,12 +85,19 @@ def route_strategy(
     -------
     dict or None
         A strategy specification dict if a trade should be entered, or
-        ``None`` if conditions do not warrant a new position.  The dict
-        contains at minimum: ``strategy`` (str), ``strikes`` (dict), and
-        ``direction`` (str).
+        None if conditions do not warrant a new position.  The dict
+        contains at minimum: strategy (str), strikes (dict), and
+        direction (str).
     """
     if regime == "undefined":
         return None
+
+    if not all(math.isfinite(v) for v in (iv_rank, underlying_price, implied_vol)):
+        raise ValueError(
+            "route_strategy received non-finite input(s): "
+            f"iv_rank={iv_rank!r}, underlying_price={underlying_price!r}, "
+            f"implied_vol={implied_vol!r}"
+        )
 
     if regime == "trending":
         # Directional conviction with rich premium: sell a credit spread.

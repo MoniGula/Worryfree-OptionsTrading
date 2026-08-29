@@ -9,6 +9,7 @@ from a scheduler or cloud function.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 
 from config import settings
@@ -63,11 +64,21 @@ def scan(symbols: list[str]) -> list[dict]:
     for symbol in symbols:
         try:
             history = yf.Ticker(symbol).history(period="6mo")
-            if history.empty or len(history) < 60:
+            if history.empty:
                 logger.warning("Skipping %s: insufficient price history.", symbol)
                 continue
 
             closes = history["close"] if "close" in history else history["Close"]
+            # yfinance can append a placeholder bar for the current
+            # calendar day (e.g. requests made just after midnight, or on
+            # a weekend/holiday when no session actually occurred) with
+            # NaN OHLC values before real data is available. Drop those so
+            # every feature below is computed from real trading sessions.
+            closes = closes.dropna()
+            if len(closes) < 60:
+                logger.warning("Skipping %s: insufficient price history.", symbol)
+                continue
+
             underlying_price = float(closes.iloc[-1])
 
             realised_vol = volatility_features.realized_volatility(closes, window=20)
@@ -87,18 +98,25 @@ def scan(symbols: list[str]) -> list[dict]:
                 closes, horizon_days=params["max_days_to_expiry"]
             )
 
-            records.append(
-                {
-                    "symbol": symbol,
-                    "underlying_price": underlying_price,
-                    "realised_vol": realised_vol,
-                    "implied_vol": implied_vol,
-                    "iv_rank": ivr,
-                    "vol_risk_premium": vrp,
-                    "trend_strength": trend,
-                    "range_probability": range_prob,
-                }
-            )
+            computed = {
+                "underlying_price": underlying_price,
+                "realised_vol": realised_vol,
+                "implied_vol": implied_vol,
+                "iv_rank": ivr,
+                "vol_risk_premium": vrp,
+                "trend_strength": trend,
+                "range_probability": range_prob,
+            }
+            non_finite = [k for k, v in computed.items() if not math.isfinite(v)]
+            if non_finite:
+                logger.warning(
+                    "Skipping %s: non-finite feature value(s): %s.",
+                    symbol,
+                    ", ".join(non_finite),
+                )
+                continue
+
+            records.append({"symbol": symbol, **computed})
         except Exception as exc:  # noqa: BLE001 - log and continue scanning others
             logger.error("Feature computation failed for %s: %s", symbol, exc)
 
@@ -129,19 +147,23 @@ def decide(feature_records: list[dict]) -> list[dict]:
 
     trade_specs: list[dict] = []
     for record in feature_records:
-        regime = classify_regime(
-            trend_strength=record["trend_strength"],
-            iv_rank=record["iv_rank"],
-            vol_risk_premium=record["vol_risk_premium"],
-        )
+        try:
+            regime = classify_regime(
+                trend_strength=record["trend_strength"],
+                iv_rank=record["iv_rank"],
+                vol_risk_premium=record["vol_risk_premium"],
+            )
 
-        spec = route_strategy(
-            regime=regime,
-            iv_rank=record["iv_rank"],
-            underlying_price=record["underlying_price"],
-            expiry_dte=expiry_dte,
-            implied_vol=record["implied_vol"],
-        )
+            spec = route_strategy(
+                regime=regime,
+                iv_rank=record["iv_rank"],
+                underlying_price=record["underlying_price"],
+                expiry_dte=expiry_dte,
+                implied_vol=record["implied_vol"],
+            )
+        except ValueError as exc:
+            logger.error("Decision engine failed for %s: %s", record["symbol"], exc)
+            continue
 
         if spec is None:
             logger.info("%s: no trade (regime=%s).", record["symbol"], regime)
